@@ -44,6 +44,9 @@ async function initializeDatabase() {
     password: credentials.password,
     database: credentials.dbname,
     port: Number(credentials.port) || 5432,
+    ssl: {
+      rejectUnauthorized: false
+    },
     max: 10,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
