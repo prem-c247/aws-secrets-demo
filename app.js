@@ -4,7 +4,7 @@ const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client
 
 const app = express();
 const port = process.env.PORT || 3000;
-const secretName = process.env.SECRET_NAME || 'personal/postgres-demo';
+const secretName = process.env.SECRET_NAME || 'test/rds-postgres';
 const region = process.env.AWS_REGION || 'us-east-1';
 
 let pool;
