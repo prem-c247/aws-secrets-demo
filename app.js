@@ -1,94 +1,36 @@
-const express = require('express');
-const { Pool } = require('pg');
-const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
+const express = require("express");
+const { initializeDatabase, getPool, getSecretMetadata } = require("./db");
 
 const app = express();
-const port = process.env.PORT || 3000;
-const secretName = process.env.SECRET_NAME || 'test/rds-postgres';
-const region = process.env.AWS_REGION || 'us-east-1';
-
-let pool;
-let lastDbCredentials = null;
+const PORT = process.env.PORT || 3000;
 
 /**
- * Fetch database credentials from AWS Secrets Manager using the EC2 IAM role
- */
-async function getDbCredentials() {
-  const client = new SecretsManagerClient({ region });
-  const command = new GetSecretValueCommand({ SecretId: secretName });
-
-  const response = await client.send(command);
-
-  if (!response.SecretString) {
-    throw new Error('SecretString not found in AWS Secrets Manager response');
-  }
-
-  const credentials = JSON.parse(response.SecretString);
-
-  if (!credentials.host || !credentials.username || !credentials.password || !credentials.dbname) {
-    throw new Error('Invalid secret format: missing required database connection fields');
-  }
-
-  return credentials;
-}
-
-/**
- * Initialize PostgreSQL connection pool with retrieved credentials
- */
-async function initializeDatabase() {
-  console.log(`[Startup] Fetching database credentials for secret: "${secretName}" in region: "${region}"...`);
-  const credentials = await getDbCredentials();
-  lastDbCredentials = credentials;
-
-  pool = new Pool({
-    host: credentials.host,
-    user: credentials.username,
-    password: credentials.password,
-    database: credentials.dbname,
-    port: Number(credentials.port) || 5432,
-    ssl: {
-      rejectUnauthorized: false,
-    },
-    max: 10,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
-  });
-
-  pool.on('error', (err) => {
-    console.error('[PostgreSQL Pool Error]', err.message);
-  });
-
-  // Verify initial connectivity
-  await pool.query('SELECT 1');
-  console.log('[Startup] Successfully connected to PostgreSQL database.');
-}
-
-/**
- * Helper to determine if client expects an interactive HTML view
+ * Determine if request is from a web browser expecting interactive HTML
  */
 function isBrowserRequest(req) {
-  if (req.query.format === 'json') return false;
-  if (req.query.format === 'html') return true;
-  const accept = req.headers.accept || '';
-  return accept.includes('text/html');
+  if (req.query.format === "json") return false;
+  if (req.query.format === "html") return true;
+  const accept = req.headers.accept || "";
+  return accept.includes("text/html");
 }
 
 /**
- * Generate interactive presentation HTML UI
+ * Generate Presentation HTML for interactive route viewing
  */
 function generatePresentationHtml({ activeRoute, title, data, statusCode, errorMsg = null }) {
   const isHealthy = statusCode === 200;
-  const statusColor = isHealthy ? '#10b981' : '#ef4444';
-  const statusBg = isHealthy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)';
-  const statusBorder = isHealthy ? '#059669' : '#dc2626';
-  const statusText = isHealthy ? 'ONLINE / CONNECTED' : 'OFFLINE / DISCONNECTED';
+  const statusColor = isHealthy ? "#10b981" : "#ef4444";
+  const statusBg = isHealthy ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)";
+  const statusBorder = isHealthy ? "#059669" : "#dc2626";
+  const statusText = isHealthy ? "ONLINE / CONNECTED" : "OFFLINE / DISCONNECTED";
+  const meta = getSecretMetadata();
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title} | AWS Secrets Demo</title>
+  <title>${title} | AWS Secrets Manager Rotation Demo</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -101,7 +43,6 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
       --primary-hover: #4f46e5;
       --text-main: #f1f5f9;
       --text-muted: #94a3b8;
-      --accent-glow: rgba(99, 102, 241, 0.15);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -113,11 +54,7 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
       flex-direction: column;
       padding: 1.5rem;
     }
-    .container {
-      max-width: 900px;
-      margin: 0 auto;
-      width: 100%;
-    }
+    .container { max-width: 920px; margin: 0 auto; width: 100%; }
     header {
       display: flex;
       justify-content: space-between;
@@ -128,81 +65,37 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
       flex-wrap: wrap;
       gap: 1rem;
     }
-    .logo-area {
-      display: flex;
-      align-items: center;
-      gap: 0.85rem;
-    }
+    .logo-area { display: flex; align-items: center; gap: 0.85rem; }
     .logo-icon {
-      width: 44px;
-      height: 44px;
-      border-radius: 12px;
+      width: 44px; height: 44px; border-radius: 12px;
       background: linear-gradient(135deg, #f59e0b, #ef4444);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.35rem;
+      display: flex; align-items: center; justify-content: center; font-size: 1.35rem;
       box-shadow: 0 4px 15px rgba(245, 158, 11, 0.3);
     }
     .logo-title {
-      font-size: 1.25rem;
-      font-weight: 800;
-      letter-spacing: -0.02em;
+      font-size: 1.25rem; font-weight: 800;
       background: linear-gradient(90deg, #fff, #cbd5e1);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     }
-    .logo-subtitle {
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      font-family: 'JetBrains Mono', monospace;
-    }
+    .logo-subtitle { font-size: 0.8rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
     .nav-tabs {
-      display: flex;
-      background: rgba(15, 23, 42, 0.6);
-      padding: 4px;
-      border-radius: 10px;
-      border: 1px solid var(--card-border);
-      gap: 4px;
+      display: flex; background: rgba(15, 23, 42, 0.6); padding: 4px; border-radius: 10px;
+      border: 1px solid var(--card-border); gap: 4px;
     }
     .nav-link {
-      color: var(--text-muted);
-      text-decoration: none;
-      padding: 8px 16px;
-      border-radius: 8px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      transition: all 0.2s ease;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
+      color: var(--text-muted); text-decoration: none; padding: 8px 16px; border-radius: 8px;
+      font-size: 0.85rem; font-weight: 600; transition: all 0.2s ease;
     }
-    .nav-link:hover {
-      color: #fff;
-      background: rgba(255, 255, 255, 0.05);
-    }
-    .nav-link.active {
-      color: #fff;
-      background: var(--primary);
-      box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
-    }
+    .nav-link:hover { color: #fff; background: rgba(255, 255, 255, 0.05); }
+    .nav-link.active { color: #fff; background: var(--primary); }
     .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 14px;
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      font-weight: 700;
-      letter-spacing: 0.03em;
-      border: 1px solid;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 9999px; font-size: 0.8rem;
+      font-weight: 700; letter-spacing: 0.03em; border: 1px solid;
     }
     .pulse-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background-color: currentColor;
-      box-shadow: 0 0 10px currentColor;
+      width: 8px; height: 8px; border-radius: 50%;
+      background-color: currentColor; box-shadow: 0 0 10px currentColor;
       animation: pulse 1.8s infinite;
     }
     @keyframes pulse {
@@ -218,7 +111,6 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
       backdrop-filter: blur(16px);
       margin-bottom: 1.5rem;
       position: relative;
-      overflow: hidden;
     }
     .card::before {
       content: '';
@@ -227,21 +119,31 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
       background: linear-gradient(90deg, #6366f1, #ec4899, #10b981);
     }
     .card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 1.5rem;
-      flex-wrap: wrap;
-      gap: 1rem;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;
     }
     .route-chip {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
+      padding: 4px 10px; background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.3); color: #a5b4fc; border-radius: 6px;
+    }
+    .rotation-banner {
+      background: rgba(99, 102, 241, 0.1);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
       font-size: 0.85rem;
-      padding: 4px 10px;
-      background: rgba(99, 102, 241, 0.15);
-      border: 1px solid rgba(99, 102, 241, 0.3);
-      color: #a5b4fc;
-      border-radius: 6px;
+    }
+    .rotation-id {
+      font-family: 'JetBrains Mono', monospace;
+      color: #38bdf8;
+      font-weight: 600;
     }
     .grid-props {
       display: grid;
@@ -256,90 +158,38 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
       padding: 1.1rem;
     }
     .prop-label {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 0.4rem;
-      font-weight: 600;
+      font-size: 0.75rem; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.4rem; font-weight: 600;
     }
     .prop-val {
-      font-size: 1.05rem;
-      font-weight: 700;
-      color: #fff;
-      font-family: 'JetBrains Mono', monospace;
-      word-break: break-all;
+      font-size: 1.05rem; font-weight: 700; color: #fff;
+      font-family: 'JetBrains Mono', monospace; word-break: break-all;
     }
     .json-section {
-      background: #070b14;
-      border-radius: 12px;
-      border: 1px solid var(--card-border);
-      padding: 1rem 1.25rem;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.85rem;
-      position: relative;
+      background: #070b14; border-radius: 12px;
+      border: 1px solid var(--card-border); padding: 1rem 1.25rem;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
     }
     .json-header {
-      display: flex;
-      justify-content: space-between;
-      color: var(--text-muted);
-      font-size: 0.75rem;
-      margin-bottom: 0.5rem;
-      text-transform: uppercase;
+      display: flex; justify-content: space-between;
+      color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.5rem; text-transform: uppercase;
     }
-    pre {
-      color: #38bdf8;
-      overflow-x: auto;
-      white-space: pre-wrap;
-    }
+    pre { color: #38bdf8; overflow-x: auto; white-space: pre-wrap; }
     .actions-bar {
-      display: flex;
-      gap: 0.75rem;
-      margin-top: 1.5rem;
-      flex-wrap: wrap;
+      display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap; align-items: center;
     }
     .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      background: var(--primary);
-      color: #fff;
-      border: none;
-      padding: 10px 20px;
-      border-radius: 10px;
-      font-weight: 600;
-      cursor: pointer;
-      font-size: 0.88rem;
-      transition: all 0.2s ease;
-      text-decoration: none;
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--primary); color: #fff; border: none; padding: 10px 20px;
+      border-radius: 10px; font-weight: 600; cursor: pointer; font-size: 0.88rem;
+      transition: all 0.2s ease; text-decoration: none;
     }
-    .btn:hover {
-      background: var(--primary-hover);
-      transform: translateY(-1px);
-    }
+    .btn:hover { background: var(--primary-hover); transform: translateY(-1px); }
     .btn-secondary {
-      background: rgba(255, 255, 255, 0.07);
-      color: var(--text-main);
-      border: 1px solid var(--card-border);
+      background: rgba(255, 255, 255, 0.07); color: var(--text-main); border: 1px solid var(--card-border);
     }
-    .btn-secondary:hover {
-      background: rgba(255, 255, 255, 0.12);
-    }
-    .live-status {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      margin-left: auto;
-    }
-    footer {
-      margin-top: auto;
-      text-align: center;
-      padding-top: 2rem;
-      color: var(--text-muted);
-      font-size: 0.8rem;
-    }
+    .btn-secondary:hover { background: rgba(255, 255, 255, 0.12); }
+    footer { margin-top: auto; text-align: center; padding-top: 2rem; color: var(--text-muted); font-size: 0.8rem; }
   </style>
 </head>
 <body>
@@ -349,7 +199,7 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
         <div class="logo-icon">🔐</div>
         <div>
           <div class="logo-title">AWS Secrets Manager Demo</div>
-          <div class="logo-subtitle">Secret: ${secretName} &bull; Region: ${region}</div>
+          <div class="logo-subtitle">Secret: ${meta.secretId} &bull; Region: ${meta.region}</div>
         </div>
       </div>
       <nav class="nav-tabs">
@@ -371,6 +221,16 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
         </div>
       </div>
 
+      <div class="rotation-banner">
+        <div>
+          <span>Active Secret Version ID: </span>
+          <span class="rotation-id">${meta.versionId || "Initial / Resolving..."}</span>
+        </div>
+        <div style="color: var(--text-muted); font-size: 0.8rem;">
+          Auto-rotation poller: active (every ${meta.refreshIntervalMs / 1000}s)
+        </div>
+      </div>
+
       <div class="grid-props">
         ${Object.entries(data).map(([key, val]) => `
           <div class="prop-box">
@@ -382,7 +242,7 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
 
       ${errorMsg ? `
         <div style="background: rgba(239,68,68,0.15); border: 1px solid #ef4444; border-radius: 10px; padding: 1rem; margin-bottom: 1.5rem; color: #fca5a5;">
-          <strong>Error Details:</strong> ${errorMsg}
+          <strong>Error:</strong> ${errorMsg}
         </div>
       ` : ''}
 
@@ -391,30 +251,24 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
           <span>Raw JSON Response</span>
           <span>HTTP ${statusCode}</span>
         </div>
-        <pre id="jsonContent">${JSON.stringify(data, null, 2)}</pre>
+        <pre>${JSON.stringify(data, null, 2)}</pre>
       </div>
 
       <div class="actions-bar">
-        <button class="btn" onclick="window.location.reload();">
-          🔄 Refresh Status
-        </button>
-        <a href="${activeRoute}?format=json" class="btn btn-secondary" target="_blank">
-          📄 View Raw JSON Endpoint
-        </a>
-        <div class="live-status">
-          <span>Auto-checks on load</span> &bull; 
-          <span id="timestamp"></span>
+        <button class="btn" onclick="window.location.reload();">🔄 Refresh Page</button>
+        <a href="${activeRoute}?format=json" class="btn btn-secondary" target="_blank">📄 View Raw JSON</a>
+        <div style="margin-left: auto; font-size: 0.8rem; color: var(--text-muted);">
+          Updated: <span id="timeNow"></span>
         </div>
       </div>
     </div>
 
     <footer>
-      Testing automatic PostgreSQL credential rotation via AWS Secrets Manager &amp; EC2 IAM Role
+      Automatic PostgreSQL Credential Rotation Demo &bull; Node.js 22 LTS &bull; AWS SDK v3
     </footer>
   </div>
-
   <script>
-    document.getElementById('timestamp').innerText = new Date().toLocaleTimeString();
+    document.getElementById('timeNow').innerText = new Date().toLocaleTimeString();
   </script>
 </body>
 </html>`;
@@ -424,12 +278,13 @@ function generatePresentationHtml({ activeRoute, title, data, statusCode, errorM
  * Generate Overview Dashboard HTML
  */
 function generateOverviewHtml() {
+  const meta = getSecretMetadata();
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dashboard | AWS Secrets Manager Demo</title>
+  <title>Dashboard | AWS Secrets Manager Rotation Demo</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -455,14 +310,9 @@ function generateOverviewHtml() {
     }
     .container { max-width: 960px; margin: 0 auto; width: 100%; }
     header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 1rem 0 2rem;
-      border-bottom: 1px solid var(--card-border);
-      margin-bottom: 2rem;
-      flex-wrap: wrap;
-      gap: 1rem;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 1rem 0 2rem; border-bottom: 1px solid var(--card-border);
+      margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;
     }
     .logo-area { display: flex; align-items: center; gap: 0.85rem; }
     .logo-icon {
@@ -499,6 +349,16 @@ function generateOverviewHtml() {
       flex-wrap: wrap;
       gap: 1rem;
     }
+    .version-tag {
+      font-family: 'JetBrains Mono', monospace;
+      background: #0f172a;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #38bdf8;
+      display: inline-block;
+      margin-top: 4px;
+    }
     .route-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
@@ -515,34 +375,19 @@ function generateOverviewHtml() {
       justify-content: space-between;
     }
     .card-title {
-      font-size: 1.2rem;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 0.5rem;
+      font-size: 1.2rem; font-weight: 700;
+      display: flex; align-items: center; gap: 8px; margin-bottom: 0.5rem;
     }
     .route-pill {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.8rem;
-      padding: 3px 8px;
-      background: rgba(99, 102, 241, 0.15);
-      border: 1px solid rgba(99, 102, 241, 0.3);
-      color: #a5b4fc;
-      border-radius: 6px;
-      display: inline-block;
-      margin-bottom: 1rem;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+      padding: 3px 8px; background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.3); color: #a5b4fc;
+      border-radius: 6px; display: inline-block; margin-bottom: 1rem;
     }
     .status-preview {
-      background: #070b14;
-      border-radius: 10px;
-      padding: 1rem;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.82rem;
-      color: #38bdf8;
-      min-height: 120px;
-      margin-bottom: 1.5rem;
-      overflow-x: auto;
+      background: #070b14; border-radius: 10px; padding: 1rem;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;
+      color: #38bdf8; min-height: 120px; margin-bottom: 1.5rem; overflow-x: auto;
     }
     .btn {
       display: inline-flex; align-items: center; justify-content: center; gap: 8px;
@@ -564,7 +409,7 @@ function generateOverviewHtml() {
         <div class="logo-icon">🔐</div>
         <div>
           <div class="logo-title">AWS Secrets Manager Demo</div>
-          <div class="logo-subtitle">Secret: ${secretName} &bull; Region: ${region}</div>
+          <div class="logo-subtitle">Secret: ${meta.secretId} &bull; Region: ${meta.region}</div>
         </div>
       </div>
       <nav class="nav-tabs">
@@ -576,10 +421,11 @@ function generateOverviewHtml() {
 
     <div class="hero-banner">
       <div>
-        <h1 style="font-size: 1.4rem; font-weight: 800; margin-bottom: 0.3rem;">PostgreSQL Credential Rotation Demo</h1>
-        <p style="color: var(--text-muted); font-size: 0.9rem;">
-          Credentials dynamically resolved via AWS Secrets Manager using the EC2 IAM Instance Profile.
+        <h1 style="font-size: 1.35rem; font-weight: 800; margin-bottom: 0.3rem;">Automatic Credential Rotation Active</h1>
+        <p style="color: var(--text-muted); font-size: 0.88rem;">
+          Background polling active every 60s. Active Secret Version:
         </p>
+        <span class="version-tag">${meta.versionId || "Detecting..."}</span>
       </div>
       <button class="btn" onclick="refreshBoth()">🔄 Re-test Both Endpoints</button>
     </div>
@@ -650,180 +496,130 @@ function generateOverviewHtml() {
  * GET /
  * Interactive Presentation Dashboard
  */
-app.get('/', (req, res) => {
+app.get("/", (req, res) => {
   if (isBrowserRequest(req)) {
     return res.status(200).send(generateOverviewHtml());
   }
   return res.status(200).json({
-    message: 'AWS Secrets Manager PostgreSQL Demo',
-    secretName,
-    region,
-    endpoints: ['/health', '/db-info'],
+    message: "AWS Secrets Manager PostgreSQL Demo",
+    ...getSecretMetadata(),
+    endpoints: ["/health", "/db-info"],
   });
 });
 
 /**
  * GET /health
- * Check PostgreSQL connectivity using SELECT 1
  */
-app.get('/health', async (req, res) => {
+app.get("/health", async (req, res) => {
   try {
-    if (!pool) {
-      const data = {
-        status: 'unhealthy',
-        application: 'running',
-        database: 'disconnected',
-      };
-      if (isBrowserRequest(req)) {
-        return res.status(503).send(generatePresentationHtml({
-          activeRoute: '/health',
-          title: 'Health Check Status',
-          data,
-          statusCode: 503,
-          errorMsg: 'PostgreSQL connection pool is not initialized',
-        }));
-      }
-      return res.status(503).json(data);
-    }
+    await getPool().query("SELECT 1");
 
-    await pool.query('SELECT 1');
     const data = {
-      status: 'healthy',
-      application: 'running',
-      database: 'connected',
+      status: "healthy",
+      database: "connected",
     };
 
     if (isBrowserRequest(req)) {
       return res.status(200).send(generatePresentationHtml({
-        activeRoute: '/health',
-        title: 'Health Check Status',
+        activeRoute: "/health",
+        title: "Application & Database Health",
         data,
         statusCode: 200,
       }));
     }
-    return res.status(200).json(data);
+
+    res.json(data);
   } catch (error) {
-    console.error('[Health Check Failed]', error.message);
     const data = {
-      status: 'unhealthy',
-      application: 'running',
-      database: 'disconnected',
+      status: "unhealthy",
+      database: "disconnected",
     };
+
     if (isBrowserRequest(req)) {
       return res.status(503).send(generatePresentationHtml({
-        activeRoute: '/health',
-        title: 'Health Check Status',
+        activeRoute: "/health",
+        title: "Application & Database Health",
         data,
         statusCode: 503,
         errorMsg: error.message,
       }));
     }
-    return res.status(503).json(data);
+
+    res.status(503).json(data);
   }
 });
 
 /**
  * GET /db-info
- * Retrieve current database, current user, and PostgreSQL version
  */
-app.get('/db-info', async (req, res) => {
+app.get("/db-info", async (req, res) => {
   try {
-    if (!pool) {
-      const data = {
-        error: 'Database connection pool is not initialized',
-        connection: 'disconnected',
-      };
-      if (isBrowserRequest(req)) {
-        return res.status(503).send(generatePresentationHtml({
-          activeRoute: '/db-info',
-          title: 'Database Connection Information',
-          data,
-          statusCode: 503,
-          errorMsg: 'Database pool is null or failed to connect at startup',
-        }));
-      }
-      return res.status(503).json(data);
-    }
+    const result = await getPool().query(`
+      SELECT current_database() AS database,
+             current_user AS username,
+             version()
+    `);
 
-    const result = await pool.query(
-      'SELECT current_database() AS database, current_user AS username, version() AS version;'
-    );
-
-    const row = result.rows[0];
-    const data = {
-      database: row.database,
-      username: row.username,
-      version: row.version,
-      connection: 'connected',
-    };
+    const data = result.rows[0];
 
     if (isBrowserRequest(req)) {
       return res.status(200).send(generatePresentationHtml({
-        activeRoute: '/db-info',
-        title: 'Database Connection Information',
+        activeRoute: "/db-info",
+        title: "Database Connection Information",
         data,
         statusCode: 200,
       }));
     }
-    return res.status(200).json(data);
+
+    res.json(data);
   } catch (error) {
-    console.error('[DB Info Query Failed]', error.message);
-    const data = {
-      error: 'Failed to retrieve database information',
-      connection: 'disconnected',
-    };
+    const data = { error: "Database query failed" };
+
     if (isBrowserRequest(req)) {
       return res.status(500).send(generatePresentationHtml({
-        activeRoute: '/db-info',
-        title: 'Database Connection Information',
+        activeRoute: "/db-info",
+        title: "Database Connection Information",
         data,
         statusCode: 500,
-        errorMsg: 'Query execution failed on PostgreSQL server',
+        errorMsg: error.message,
       }));
     }
-    return res.status(500).json(data);
+
+    res.status(500).json(data);
   }
 });
 
-/**
- * Start server and manage graceful shutdown
- */
 async function startServer() {
-  try {
-    await initializeDatabase();
-  } catch (error) {
-    console.error('[Startup Error] Failed to initialize database from AWS Secrets Manager:', error.message);
-    console.error('[Startup Warning] Server will start, but database endpoints will report disconnected status.');
-  }
+  await initializeDatabase();
 
-  const server = app.listen(port, () => {
-    console.log(`[Server] Express server listening on port ${port}`);
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
   });
 
   const gracefulShutdown = async (signal) => {
-    console.log(`\n[Shutdown] Received ${signal}. Closing server and database pool...`);
+    console.log(`\n[Shutdown] Received ${signal}. Closing server and active pool...`);
     server.close(async () => {
-      console.log('[Shutdown] HTTP server closed.');
-      if (pool) {
-        try {
-          await pool.end();
-          console.log('[Shutdown] PostgreSQL connection pool drained and closed.');
-        } catch (err) {
-          console.error('[Shutdown Error] Error while closing pool:', err.message);
-        }
+      try {
+        const pool = getPool();
+        await pool.end();
+        console.log("[Shutdown] Active PostgreSQL connection pool drained and closed.");
+      } catch (err) {
+        console.error("[Shutdown Error]", err.message);
       }
       process.exit(0);
     });
 
-    // Force exit after 10s if graceful shutdown hangs
     setTimeout(() => {
-      console.error('[Shutdown] Forced shutdown after timeout.');
+      console.error("[Shutdown] Forced exit timeout.");
       process.exit(1);
     }, 10000);
   };
 
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 }
 
-startServer();
+startServer().catch((error) => {
+  console.error("Application startup failed:", error);
+  process.exit(1);
+});
