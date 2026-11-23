@@ -1,0 +1,14 @@
+{
+  "name": "aws-secrets-demo",
+  "version": "1.0.0",
+  "description": "Minimal Node.js Express application for testing AWS Secrets Manager with PostgreSQL",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.750.0",
+    "express": "^4.21.2",
+    "pg": "^8.13.3"
+  }
+}
