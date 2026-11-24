@@ -6,7 +6,7 @@ const { Pool } = require("pg");
 
 const SECRET_ID = process.env.SECRET_ID || process.env.SECRET_NAME || "test/rds-postgres";
 const REGION = process.env.AWS_REGION || "us-east-1";
-const REFRESH_INTERVAL = parseInt(process.env.REFRESH_INTERVAL, 10) || 60 * 1000; // 1 minute
+const REFRESH_INTERVAL = parseInt(process.env.REFRESH_INTERVAL, 10) || 5 * 1000; // 1 minute
 
 const client = new SecretsManagerClient({
   region: REGION,
